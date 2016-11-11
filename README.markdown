@@ -1,4 +1,4 @@
-#cupSODA release 1.0
+#cupSODA release 1.1.0
 
 ## ABOUT
 
@@ -30,7 +30,7 @@ The command above would create a binary executable file runnable on GPUs with _a
 
 cupSODA is designed to be launched from the command line. The arguments are: 
 
-`cupSODA input_folder blocks output_folder prefix gpu fitness memory_configuration`
+`cupSODA input_folder blocks output_folder prefix gpu fitness memory_configuration debug`
 
 where
 
@@ -38,6 +38,7 @@ where
 * `blocks` is the number of CUDA blocks used to distribute the requested parallel threads;
 * `output_folder` is the path to the directory that will store the output dynamics of the simulations;
 * `prefix` is the file name of the output files. A number, corresponding the thread, will be automatically appended to the filename by cupSODA;
+* `debug` enables debug information: 1 outputs everything, 2 outputs everything but LSODA istate values for each thread.
 
 Further information about the `gpu`, `fitness` and `memory_configuration` arguments, along with the specifications of the input files, can be found at the following address:
 
