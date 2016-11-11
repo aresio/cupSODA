@@ -203,7 +203,7 @@ void st2det::dump_jac(bool print_to_video) {
 }
 
 
-bool st2det::open_files( std::string folder, std::string output, std::string prefix, bool use_cmatrix, bool dump, bool just_fit, bool use_constant) {
+bool st2det::open_files( std::string folder, std::string output, std::string prefix, bool use_cmatrix, bool dump, bool just_fit, bool use_constant, bool traditional_fitness) {
 
 	std::string v;	
 	
@@ -418,12 +418,12 @@ bool st2det::open_files( std::string folder, std::string output, std::string pre
 	mx_file.close();
 
 	/// Step 5: feed
-	unsigned int* feed_vector = (unsigned int*) malloc( sizeof(unsigned int)*species);
+	// unsigned int* feed_vector = (unsigned int*) malloc( sizeof(unsigned int)*species);
+	conc_t* feed_vector = (conc_t*) malloc( sizeof(conc_t)*species);
 	std::ifstream feed_file;
 	feed_file.open( (this->DEFAULT_FOLDER+"/M_feed").c_str() );
 	if (! feed_file.is_open()) {
-		memset( feed_vector, 0, sizeof(unsigned int)*species);
-		
+		memset( feed_vector, 0, sizeof(conc_t)*species);		
 	} else {
 		getline(feed_file, v);
 		a.clear();
@@ -433,7 +433,12 @@ bool st2det::open_files( std::string folder, std::string output, std::string pre
 			return false;
 		}
 		for (unsigned int s=0; s<species; s++) {
-			feed_vector[s] = atoi(a[s].c_str());
+			feed_vector[s] = atof(a[s].c_str());
+			if (feed_vector[s]!=0) {
+				for (unsigned int t=0; t<threads; t++) {				
+					X[t*species+s] = feed_vector[s];
+				}
+			}
 		}
 		feed_file.close();
 
@@ -862,112 +867,115 @@ bool st2det::open_files( std::string folder, std::string output, std::string pre
 	this->thread2experiment = (char*) malloc ( sizeof(char)*threads );
 
 	if (just_fit) {
+		if (traditional_fitness)  {
 
-		/// Step ??: apertura serie temporali (if any)
-		/// la serie è lunga T_vector
-		/// dobbiamo leggere le informazioni su il numero di esperimenti, e ripetizioni
-		std::ifstream ts_rep_file;
-		ts_rep_file.open( (this->DEFAULT_FOLDER+"/ts_rep").c_str() );
-		if (! ts_rep_file.is_open() ) {
-			if (dump) perror("WARNING: cannot open ts_rep file: ");
-		} else {
-			getline(ts_rep_file, v);
-			this->repetitions = atoi(v.c_str());	
-			ts_rep_file.close();
-		}
+			/// Step ??: apertura serie temporali (if any)
+			/// la serie è lunga T_vector
+			/// dobbiamo leggere le informazioni su il numero di esperimenti, e ripetizioni
+			std::ifstream ts_rep_file;
+			ts_rep_file.open( (this->DEFAULT_FOLDER+"/ts_rep").c_str() );
+			if (! ts_rep_file.is_open() ) {
+				if (dump) perror("WARNING: cannot open ts_rep file: ");
+			} else {
+				getline(ts_rep_file, v);
+				this->repetitions = atoi(v.c_str());	
+				ts_rep_file.close();
+			}
 
-		std::ifstream ts_numtgt_file;
-		ts_numtgt_file.open( (this->DEFAULT_FOLDER+"/ts_numtgt").c_str() );
-		if (! ts_numtgt_file.is_open() ) {
-			if (dump) perror("WARNING: cannot open ts_numtgt file: ");
-		} else {
-			getline(ts_numtgt_file, v);
-			this->target_quantities = atoi(v.c_str());	
-			ts_numtgt_file.close();
-		}
+			std::ifstream ts_numtgt_file;
+			ts_numtgt_file.open( (this->DEFAULT_FOLDER+"/ts_numtgt").c_str() );
+			if (! ts_numtgt_file.is_open() ) {
+				if (dump) perror("WARNING: cannot open ts_numtgt file: ");
+			} else {
+				getline(ts_numtgt_file, v);
+				this->target_quantities = atoi(v.c_str());	
+				ts_numtgt_file.close();
+			}
 
 	
 	
-		std::ifstream tts_file;
-		tts_file.open( (this->DEFAULT_FOLDER+"/tts_vector").c_str() );
-		if (! tts_file.is_open() ) {
-			if (dump) perror("WARNING: cannot open tts_vector file: ");
-		} else {
-			char pp=0;
-			unsigned int last=0;
-			while( tts_file.good() ) {
-				getline(tts_file, v);
-				if (v.size()<1) continue;
-				for (unsigned int kk=last; kk<atoi(v.c_str()); kk++) {
-					this->thread2experiment[kk]=pp;
-				}
-				last =  atoi(v.c_str());
-				pp++;
-				// this->experiments = atoi(v.c_str());	
-			}		
+			std::ifstream tts_file;
+			tts_file.open( (this->DEFAULT_FOLDER+"/tts_vector").c_str() );
+			if (! tts_file.is_open() ) {
+				if (dump) perror("WARNING: cannot open tts_vector file: ");
+			} else {
+				char pp=0;
+				unsigned int last=0;
+				while( tts_file.good() ) {
+					getline(tts_file, v);
+					if (v.size()<1) continue;
+					for (unsigned int kk=last; kk<atoi(v.c_str()); kk++) {
+						this->thread2experiment[kk]=pp;
+					}
+					last =  atoi(v.c_str());
+					pp++;
+					// this->experiments = atoi(v.c_str());	
+				}		
 		
-			this->experiments = pp;
+				this->experiments = pp;
 
-			if (last!=this->threads) {
-				printf("ERROR! cannot assign threads to initial conditions (check tts_vector file): aborting\n");
-				system("pause");
-				exit(-10);
-			}
-
-			if (dump) {
-				printf(" * Threads assigned to conditions:\n");
-				for (unsigned kk=0; kk<threads; kk++) {
-					printf("%d\t", this->thread2experiment[kk]);
+				if (last!=this->threads) {
+					printf("ERROR! cannot assign threads to initial conditions (check tts_vector file): aborting\n");
+					system("pause");
+					exit(-10);
 				}
-				printf("\n");
+
+				if (dump) {
+					printf(" * Threads assigned to conditions:\n");
+					for (unsigned kk=0; kk<threads; kk++) {
+						printf("%d\t", this->thread2experiment[kk]);
+					}
+					printf("\n");
+				}
+				tts_file.close();
 			}
-			tts_file.close();
-		}
 
 	
 
 
-		if (dump)
-			printf(" * Experiments: %d, repetitions: %d target quantities: %d\n", this->experiments, this->repetitions, this->target_quantities);
+			if (dump)
+				printf(" * Experiments: %d, repetitions: %d target quantities: %d\n", this->experiments, this->repetitions, this->target_quantities);
 
 
-		/// sappiamo le righe (len time_instants), sappiamo le colonne (exp * rep * len cs_vector) 
-		this->global_time_series = (double*) malloc ( sizeof(double) * 
-			this->experiments * 
-				this->repetitions * 
-					this->target_quantities * 
-						this->time_instants.size() );
+			/// sappiamo le righe (len time_instants), sappiamo le colonne (exp * rep * len cs_vector) 
+			this->global_time_series = (double*) malloc ( sizeof(double) * 
+				this->experiments * 
+					this->repetitions * 
+						this->target_quantities * 
+							this->time_instants.size() );
 
 
-		std::ifstream ts_matrix_file;
-		ts_matrix_file.open( (this->DEFAULT_FOLDER+"/ts_matrix").c_str() );
-		if (! ts_matrix_file.is_open() ) {
-			if (dump) perror("WARNING: cannot open ts file (fitness unavailable)");
-			if (just_fit) {
-				exit(ERROR_TIMESERIES_NOT_SPECIFIED);
-			}
-		} else {
-		
-			unsigned int riga =0;
-			unsigned int colonne = this->experiments * this->repetitions * this ->target_quantities;
-
-			while( ts_matrix_file.good() ) {
-
-				getline(ts_matrix_file, v);
-				a.clear();
-				tokenize(v,a);
-				if (a.size()<1) continue;
-				for (unsigned int kk=1; kk<colonne+1; kk++ ) {
-					this->global_time_series[ riga*colonne + kk-1 ] = atof(a[kk].c_str());
+			std::ifstream ts_matrix_file;
+			ts_matrix_file.open( (this->DEFAULT_FOLDER+"/ts_matrix").c_str() );
+			if (! ts_matrix_file.is_open() ) {
+				if (dump) perror("WARNING: cannot open ts file (fitness unavailable)");
+				if (just_fit) {
+					exit(ERROR_TIMESERIES_NOT_SPECIFIED);
 				}
-				riga++;
+			} else {
+		
+				unsigned int riga =0;
+				unsigned int colonne = this->experiments * this->repetitions * this ->target_quantities;
+
+				while( ts_matrix_file.good() ) {
+
+					getline(ts_matrix_file, v);
+					a.clear();
+					tokenize(v,a);
+					if (a.size()<1) continue;
+					for (unsigned int kk=1; kk<colonne+1; kk++ ) {
+						this->global_time_series[ riga*colonne + kk-1 ] = atof(a[kk].c_str());
+					}
+					riga++;
+
+				}
+
+				if (dump) printf(" * Time series loaded and assigned to threads\n");
+				ts_matrix_file.close();
 
 			}
 
-			if (dump) printf(" * Time series loaded and assigned to threads\n");
-			ts_matrix_file.close();
-
-		}
+		} // end traditional fitness
 
 	} // end just fitness
 

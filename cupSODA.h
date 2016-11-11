@@ -11,9 +11,10 @@ See file COPYING for copyright and licensing information.
 
 #include "input_reader.h"
 #include "stoc2det.h"
+#include <cmath>
 
-#define min(a,b) ((a) <= (b) ? (a) : (b))
-#define max(a,b) ((a) >= (b) ? (a) : (b))
+// #define min(a,b) ((a) <= (b) ? (a) : (b))
+// #define max(a,b) ((a) >= (b) ? (a) : (b))
 
 /* Pointer to compressed ODE on the GPU */
 extern char* device_compressed_odes;
@@ -59,6 +60,7 @@ void SetConstants( unsigned int species, unsigned int reactions, unsigned int od
 void LoadSystem( st2det* system );
 bool CheckArguments(unsigned int argc, char** argv);
 void SetODEarray(st2det* system  );
+void calculate_fft( st2det* s2d, double* device_X, std::string exportfile="" );
 
 /* Common Block Declarations */
 struct cuLsodaCommonBlock
@@ -341,8 +343,10 @@ __global__ void cuLsoda(myFex fex, int *neq, double *y, double *t, double *tout,
 	double *atol, int *itask, int *istate, int *iopt, double *rwork, int *lrw, int *iwork, int *liw, myJex jac, int *jt, struct cuLsodaCommonBlock *common, int* debug, char* comp_ode,  param_t* flattenODE, unsigned int* offsetODE,  double* costanti, conc_t* device_X, unsigned int campione, unsigned int* s2s,
 	param_t* myjac, unsigned int* myjacoffset, bool ACTIVATE_SHARED_MEMORY, bool ACTIVATE_CONSTANT_MEMORY);
 
-__global__ void calculateFitnessPRR( double* samples, double* target, double* fitness, char* swarm );
+//__global__ void calculateFitnessPRR( double* samples, double* target, double* fitness, char* swarm );
 __global__ void calculateFitness( double* samples, double* target, double* fitness, char* swarm );
+//__global__ void calculateFitnessYuki( double* samples, double* fitness );
+__global__ void calculateFitnessNoman( double* samples, double* fitness, double const iteration );
 
 
 #define DEEP_ERROR_CHECK
@@ -372,6 +376,25 @@ inline void __cudaCheckError( const char *file, const int line )
     return;
 }
 #define CudaCheckError()    __cudaCheckError( __FILE__, __LINE__ )
+
+
+
+inline void __cudaCheckErrorRelease( const char *file, const int line )
+{
+#ifdef CUDA_ERROR_CHECK
+
+	cudaThreadSynchronize();
+    cudaError err = cudaGetLastError();
+    if ( cudaSuccess != err )
+    {
+        fprintf( stderr, "cudaCheckError() failed at %s:%i : %s\n", file, line, cudaGetErrorString( err ) );
+		system("pause");
+        exit( -1 );
+    }
+    return;
+}
+#define CudaCheckErrorRelease()    __cudaCheckErrorRelease( __FILE__, __LINE__ )
+#endif
 
 
 #endif

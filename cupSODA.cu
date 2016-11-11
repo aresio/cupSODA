@@ -4,19 +4,24 @@ See file COPYING for copyright and licensing information.
 */
 
 
+#include <cuda.h>
+// #include <cuda_runtime_api.h>
 #include "constants.h"
 #include "cupSODA.h"
 #include <vector>
 #include "input_reader.h"
 #include "stoc2det.h"
 #include <cstdio>
+#include <fstream>
+#include <algorithm>
+#include <cfloat>
 
+#include <cufft.h>
+#include <cufftw.h>
 
 // extern char* device_compressed_odes;
 
 // void save_constants(unsigned int c) { cudaMemcpyToSymbol(NUM_ODES, &c, sizeof(unsigned int), 0, cudaMemcpyHostToDevice); }
-
-
 
 void LoadSystem( st2det* system ) {
 
@@ -6074,12 +6079,10 @@ __global__ void cuLsoda(myFex fex, int *neq, double *y, double *t, double *tout,
 	// #define ACCESS_SAMPLE  larg*DEV_CONST_SAMPLESLUN*campione + larg*s + tid  
 	for (unsigned int s=0; s<DEV_CONST_SAMPLESLUN; s++) {		
 		if (ACTIVATE_SHARED_MEMORY) {
-//#ifdef USE_SHARED_MEMORY
-		device_X[ ACCESS_SAMPLE  ] =  sh_y[threadIdx.x*DEV_CONST_SPECIES+s2s[s]];			
+			device_X[ ACCESS_SAMPLE  ] =  sh_y[threadIdx.x*DEV_CONST_SPECIES+s2s[s]];			
+			
 		} else {
-// #else
-		device_X[ ACCESS_SAMPLE  ] =  y[tid*DEV_CONST_SPECIES+s2s[s]];			
-//#endif
+			device_X[ ACCESS_SAMPLE  ] =  y[tid*DEV_CONST_SPECIES+s2s[s]];			
 		}
 	}
 
@@ -6112,6 +6115,7 @@ bool CheckArguments(unsigned int argc, char** argv) {
 //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 	
 /*  Questa fitness è specifica del PRR */
+/*
 __global__ void calculateFitnessPRR( double* samples, double* target, double* fitness, char* swarm ) {
 
 	unsigned int tid = threadIdx.x + blockDim.x*blockIdx.x;
@@ -6174,7 +6178,7 @@ __global__ void calculateFitnessPRR( double* samples, double* target, double* fi
 			printf("%f\t", target[offset+2]);
 			printf("\n");
 		}*/
-		
+		/*
 
 		fitness[tid] +=
 			abs(target[offset+0]-ratio_u1) + 
@@ -6185,6 +6189,7 @@ __global__ void calculateFitnessPRR( double* samples, double* target, double* fi
 
 };
 
+*/
 
 __device__ inline  double fetch_target(double* source, unsigned int species, unsigned int experiment, unsigned int repetition, unsigned int sample) {
 	return source[ 		
@@ -6197,7 +6202,6 @@ __device__ inline  double fetch_simulation(double* source, unsigned int species,
 	unsigned int gid = threadIdx.x + blockDim.x*blockIdx.x;	
  	return source[ blockDim.x*gridDim.x*DEV_CONST_SAMPLESLUN*sample + blockDim.x*gridDim.x*species+ gid ];	
 }
-
 
 __global__ void calculateFitness( double* simulation, double* target, double* output_fitness, char* swarm ) {
 
@@ -6222,6 +6226,550 @@ __global__ void calculateFitness( double* simulation, double* target, double* ou
 
 	output_fitness[tid] = subfitness;
 
+}
+
+
+// Knuth's running variance
+class RunningStat
+    {
+    public:
+        __device__ RunningStat() : m_n(0) {}
+
+        __device__ void Clear()
+        {
+            m_n = 0;
+        }
+
+        __device__ void Push(double x)
+        {
+            m_n++;
+
+            // See Knuth TAOCP vol 2, 3rd edition, page 232
+            if (m_n == 1)
+            {
+                m_oldM = m_newM = x;
+                m_oldS = 0.0;
+            }
+            else
+            {
+                m_newM = m_oldM + (x - m_oldM)/m_n;
+                m_newS = m_oldS + (x - m_oldM)*(x - m_newM);
+    
+                // set up for next iteration
+                m_oldM = m_newM; 
+                m_oldS = m_newS;
+            }
+        }
+
+        __device__ int NumDataValues() const
+        {
+            return m_n;
+        }
+
+        __device__ double Mean() const
+        {
+            return (m_n > 0) ? m_newM : 0.0;
+        }
+
+        __device__ double Variance() const
+        {
+            return ( (m_n > 1) ? m_newS/(m_n - 1) : 0.0 );
+        }
+
+        __device__ double StandardDeviation() const
+        {
+            return sqrt( Variance() );
+        }
+
+		__device__ double Dispersion() const
+		{
+			return (Mean()>0) ? StandardDeviation()/Mean() : DBL_MAX;
+		}
+
+    private:
+        int m_n;
+        double m_oldM, m_newM, m_oldS, m_newS;
+    };
+
+	/*
+
+__global__ void calculateFitnessYuki(double* samples, double* fitness)  {
+
+	// const double THRESHOLD = 1e-5;
+
+	unsigned int tid  = threadIdx.x + blockIdx.x*blockDim.x;
+	unsigned int larg = blockDim.x * gridDim.x;
+
+	double temp_fitness = DBL_MAX;
+	
+	// for each species...
+	for (unsigned int s=0; s<DEV_CONST_SAMPLESLUN; s++) {
+
+		double first_maxvalue = DBL_MAX;
+		double last_maxvalue  = DBL_MAX;
+
+		double first_minvalue = -DBL_MAX;
+		double last_minvalue  = -DBL_MAX;
+
+		bool firstmax = true;
+		bool firstmin = true;
+		unsigned int counting_max = 0;
+		RunningStat rs_max;
+		RunningStat rs_min;
+	
+		// The main step is to compare the first and last local maxima: if they are relatively very different, 
+		// then the fitness must be affected (we do not want damping solutions).
+		// However, detecting minima and maxima is far from trivial; we use a sliding window.
+		for (unsigned int i=5000; i<DEV_CONST_SAMPLES-1; i++) {
+			
+			// fetch_target(double* source, unsigned int species, unsigned int experiment, unsigned int repetition, unsigned int sample) {
+			unsigned int campione=i-1;
+			double previous = samples[ACCESS_SAMPLE];
+			campione=i;
+			double current  = samples[ACCESS_SAMPLE];
+			campione=i+1;
+			double next     = samples[ACCESS_SAMPLE];
+
+			// local maxima
+			if ( (previous<current) && (next<=current) ) {
+				if (firstmax) {
+					firstmax = false;
+					first_maxvalue = current;
+					// if (tid==4) printf("First maximum: %d (%f).\n", i, current);
+				} else {
+					last_maxvalue  = current;					
+					//  if (tid==4) printf("Last maximum: %d (%f).\n", i, current);
+				}		
+				counting_max++;
+				rs_max.Push(current);
+			} else  // ....
+		
+				// local minima
+			if ( (previous>current) && (next>=current) ) {
+				if (firstmin) {
+					firstmin = false;
+					first_minvalue = current;
+					// if (tid==4) printf("First minimum: %d (%f).\n", i, current);
+				} else {
+					last_minvalue  = current;
+					// if (tid==4) printf("Last minimum: %d (%f).\n", i, current);
+				}		
+				rs_min.Push(current);
+			}
+		}
+
+		// Yuki's fitness
+		// if (tid==4)	printf("%d) (%.15f-%.15f)/(%.15f-%.15f)=%.15f.\n", tid, first_maxvalue, first_minvalue, last_maxvalue, last_minvalue,(first_maxvalue-first_minvalue)/(last_maxvalue-last_minvalue) );
+
+		if ( (first_maxvalue != DBL_MAX) && (last_minvalue != -DBL_MAX) && (last_minvalue != -DBL_MAX) && (last_maxvalue!=DBL_MAX) ) {
+				double diff = rs_min.Dispersion()+rs_max.Dispersion();
+				if (temp_fitness> diff)	temp_fitness = diff;
+		}		
+
+		/*
+		if (tid==0) {
+			printf("YUKI> species %d, 1st max: %f, last max: %f, rv_mu: %f, rv_sigma: %f, rv_mu*: %f.\n", s, first_maxvalue, last_maxvalue, rs_max.Mean(), rs_max.StandardDeviation(), rs_max.Dispersion());
+			printf( "                 1st min: %f, last min: %f, rv_mu: %f, rv_sigma: %f, rv_mu*: %f.\n",    first_minvalue, last_minvalue, rs_min.Mean(), rs_min.StandardDeviation(), rs_min.Dispersion());
+			printf( "                 TOTAL PEAKS: %d, TOTAL ERROR: %f, mu_max-mu_min: %f.\n", counting_max, rs_min.Dispersion()+rs_max.Dispersion(), rs_max.Mean()-rs_min.Mean());
+			printf( "                 Yuki's fitness: %f.\n", (first_maxvalue-first_minvalue)/(last_maxvalue-last_minvalue));
+			if (first_maxvalue / last_maxvalue > 1.05 || first_maxvalue / last_maxvalue < 0.95) {
+				printf("Disproportioned: %f.\n", first_maxvalue/last_maxvalue);
+			}		
+		}
+		*/
+		/*
+	}
+
+	fitness[tid]=temp_fitness;	
+
+}
+*/
+ __device__ inline bool is_maximum(double const prev, double const curr, double const next) { return (prev<=curr) && (next<curr); }
+ __device__ inline bool is_minimum(double const prev, double const curr, double const next) { return (prev>=curr) && (next>curr); }
+
+
+
+/*
+__device__ double oscillatingFitness2(double* data) {
+
+	double totalResult = 0;
+	double result = 0;
+	double sde;
+	double limitcycle = 0.00001;
+	double penalty = 1.0;
+	int skipTime = Constants.skipTime;
+	int calculationTime = Constants.maxTime - (Constants.skipTime+Constants.skipTime);
+	
+	int firstPeak;
+	int firstBottom;
+	int lastPeak;
+	int lastBottom;
+
+	for (int output = 0; output < data.length; ++ output){
+		result = 0;
+		sde  = 0;
+		limitcycle = 0.00001;
+		penalty=1.0;
+
+		firstPeak = getNextPeak(data[output], skipTime);
+		if (firstPeak == -1 ) { 
+			int firstPeak2 = getNextPeak(data[output], 0);  // search for the first peak with skipTime = 0
+			if (firstPeak2 == -1) {  // no peak found : so no oscillation
+				result = 0; 
+				continue;
+			} else {  // some faded oscillatory behavior observed before the skipTime so give some minimum credit
+				firstPeak = firstPeak2;
+				penalty = 0.3;   // penalty due to faded oscillation;
+			}
+		}	
+
+		firstBottom = getNextBottom(data[output],skipTime);
+		if (firstBottom == -1){  // no bottom found after skipTime
+			int firstBottom2 = getNextBottom(data[output], 0);  // search for the first bottom with skipTime = 0
+			if (firstBottom2 == -1) {  // no bottom found : so no oscillation
+				result = 0; 
+				continue;
+			} else {  // some faded oscillatory behavior observed before the skipTime so give some minimum credit
+				firstBottom = firstBottom2;
+				penalty = 0.3;   // penalty due to faded oscillation;
+			}
+		}
+
+		// find the peak and bottom after calculation period
+		lastPeak = getNextPeak(data[output],calculationTime);
+		if (lastPeak == -1){  // no peak found after calculationTime: so faded oscillation
+			lastPeak = getPrevPeak(data[output],calculationTime + 1);
+			if (lastPeak == firstPeak){  // there is only one peak
+				penalty = 0.2;
+			}
+		}
+
+		lastBottom = getNextBottom(data[output],lastPeak);
+		if (lastBottom == -1){  // no bottom found after calculation time : try backward
+			lastBottom = getPrevBottom(data[output],lastPeak + 1);
+			if (lastBottom == firstBottom){ // there is only one bottom
+				penalty = 0.2;
+			}
+		} else{
+			if (firstPeak != -1 && firstBottom != -1 && lastPeak != -1 && lastBottom != -1){
+				double firstAmp = Math.abs(data[output][firstPeak] - data[output][firstBottom]);
+				double lastAmp = Math.abs(data[output][lastPeak] - data[output][lastBottom]);
+				limitcycle = 1 / (1 + Math.abs(firstAmp - lastAmp) / firstAmp) / (1 + Math.abs(firstAmp - lastAmp) / firstAmp);
+			} else{
+				penalty = 0.2;
+			}
+		}
+
+		double average = 0;
+		int calculationCount = 0;
+		for (int i = Math.max(firstPeak, skipTime); i < Math.min(firstPeak + calculationTime, data[output].length - 1); i++) {
+			average += data[output][i];
+			calculationCount++;
+		}
+		average = average / calculationCount;
+		double standdev = 0;
+		int tmpCount = 0;
+
+		for (int i = Math.max(firstPeak, skipTime); i < Math.min(firstPeak + calculationTime, data[output].length - 1); i++) {
+			standdev += (average - data[output][i]) * (average - data[output][i]);
+			tmpCount++;
+		}
+		standdev /= tmpCount;
+		sde = Math.min(5, standdev);  // maximum value of standard deviation is 5
+		result = sde * limitcycle * penalty;
+
+		totalResult += result;
+
+	} 
+
+	totalResult /= data.length;
+	if (totalResult > (Constants.oscillationFitnessThreshold ) ) return 1.0;
+	return 0.0;
+}
+*/
+
+__device__ bool peak_during_transient(double* samples, unsigned int s, unsigned int iters) {
+
+	unsigned int tid  = threadIdx.x + blockIdx.x*blockDim.x;
+	unsigned int larg = blockDim.x * gridDim.x;
+
+	for (unsigned int i=0; i<iters; i++) {			
+		unsigned int campione=i-1;
+		double previous = samples[ACCESS_SAMPLE];
+		campione=i;
+		double current  = samples[ACCESS_SAMPLE];
+		campione=i+1;
+		double next     = samples[ACCESS_SAMPLE];
+		if ( is_maximum(previous, current, next) ) return true;
+	}
+	return false;
+}
+
+__device__ bool bottom_during_transient(double* samples, unsigned int s, unsigned int iters) {
+
+	unsigned int tid  = threadIdx.x + blockIdx.x*blockDim.x;
+	unsigned int larg = blockDim.x * gridDim.x;
+
+	for (unsigned int i=0; i<iters; i++) {			
+		unsigned int campione=i-1;
+		double previous = samples[ACCESS_SAMPLE];
+		campione=i;
+		double current  = samples[ACCESS_SAMPLE];
+		campione=i+1;
+		double next     = samples[ACCESS_SAMPLE];
+		if ( is_minimum(previous, current, next) ) return true;
+	}
+	return false;
+}
+
+
+
+__device__ void determine_minmax(double* const samples, unsigned int const s, 
+							double* first_maxvalue, 
+							double* first_minvalue, 
+							double* last_maxvalue, 
+							double* last_minvalue, 
+							bool* firstmax,
+							bool* firstmin,
+							double absolute_threshold,
+							RunningStat* all,
+							unsigned int  const starting_point,
+							int dump=-1
+							) {
+
+		unsigned int tid  = threadIdx.x + blockIdx.x*blockDim.x;
+		unsigned int larg = blockDim.x * gridDim.x;
+
+		char swi = 0;
+		*firstmax = true;
+		*firstmin = true;
+
+		all->Clear();
+
+		double current ;
+		
+		for (unsigned int campione=0; campione<starting_point; campione++) {
+			current = samples[ACCESS_SAMPLE];
+			all->Push(current);
+		}
+
+		// The main step is to compare the first and last local maxima: if they are relatively very different, 
+		// then the fitness must be affected (we do not want damping solutions).
+		// However, detecting minima and maxima is far from trivial; we use a sliding window.
+		for (unsigned int i=starting_point+1; i<DEV_CONST_SAMPLES-1; i++) {
+			
+			// fetch_target(double* source, unsigned int species, unsigned int experiment, unsigned int repetition, unsigned int sample) {
+			unsigned int campione=i-1;
+			double previous = samples[ACCESS_SAMPLE];
+			campione=i;
+			current  = samples[ACCESS_SAMPLE];
+			campione=i+1;
+			double next     = samples[ACCESS_SAMPLE];
+
+			all->Push(current);
+
+									
+			// local maxima
+			if ( is_maximum(previous, current, next) ) {
+
+				if (tid==dump) printf(" * Maximum detected.\n");
+
+				// skip wrong consecutive maximum
+				if (swi==1) {
+					if (tid==dump) printf(" * Skipping wrong consecutive maximum.\n");
+					continue;
+				}
+				
+				// skip spurious maxima
+				if (abs(current-*last_minvalue)<absolute_threshold) {
+					if (tid==dump) printf(" * Maximum %f is too similar to previous minimum %f (distance: %f<%f), aborting.\n", current, *last_minvalue, abs(current-*last_minvalue), absolute_threshold);					
+				} else {
+					if (*firstmax) {
+						*firstmax = false;
+						*first_maxvalue = current;
+						*last_maxvalue = current;
+						if (tid==dump) printf(" * First maximum detected (sample %d, value %f).\n", campione, current);
+					} else {
+						*last_maxvalue  = current;					
+						if (tid==dump) printf(" * New maximum detected (sample %d, value %f).\n", campione, current);
+					}						
+					swi=1;
+				}
+				
+			
+			// local minima
+			} else if ( is_minimum(previous, current, next) ) {
+
+				if (tid==dump) printf(" * Minimum detected.\n");
+
+				// skip wrong consecutive minima
+				if (swi==2) {
+					if (tid==dump) printf(" * Skipping wrong consecutive minimum.\n");
+					continue;
+				}
+
+
+				// skip spurious minima
+				if (abs(*last_maxvalue-current)<absolute_threshold) {
+					if (tid==dump) printf(" * Minimum %f is too similar to previous maximum %f (distance: %f<%f), aborting.\n", current, *last_maxvalue, abs(*last_maxvalue-current), absolute_threshold);
+				} else {				
+					if (*firstmin) {
+						*firstmin = false;
+						*first_minvalue = current;
+						*last_minvalue = current;
+						if (tid==dump) printf(" * First minimum detected (sample %d, value %f).\n", campione, current);
+					} else {
+						*last_minvalue  = current;
+						if (tid==dump) printf(" * New minimum detected (sample %d, value %f).\n", campione, current);
+					}	
+					swi=2;
+				}				
+			
+			}  else {
+				// no minimum/maximum
+
+				// printf("NO MIN/MAX.\n");
+
+				// return;
+
+			}
+
+			
+
+
+		} // end for on samples
+		
+}
+
+	
+__global__ void calculateFitnessNoman(double* const samples, double* fitness, double const it_ratio)  {
+
+	
+	const double THRESHOLD = 1e-3;
+	const unsigned int SKIP = DEV_CONST_SAMPLES*.1;
+	
+
+	unsigned int tid  = threadIdx.x + blockIdx.x*blockDim.x;
+	unsigned int larg = blockDim.x * gridDim.x;
+
+	double temp_fitness = 0;
+	
+	// printf("DEV_CNST_SAMPLES: %d.\n", DEV_CONST_SAMPLES);
+
+	// for each sampled species...
+	for (unsigned int s=0; s<DEV_CONST_SAMPLESLUN; s++) {
+	
+		double absolute_maximum = 0;
+		double absolute_minimum = DBL_MAX;
+
+		// 1st step: Determine absolute maximum and minimum of the time-series for this species.
+		//			 Calculate absolute threshold for this species (used to remove spurious oscillations).
+		// #define ACCESS_SAMPLE  larg*DEV_CONST_SAMPLESLUN*campione + larg*s + tid  
+		for (unsigned int campione=0; campione<DEV_CONST_SAMPLES; campione++) {
+			double sampl = samples[ACCESS_SAMPLE];
+			if (sampl>absolute_maximum) absolute_maximum = sampl;
+			if (sampl<absolute_minimum) absolute_minimum = sampl;
+		}
+		double absolute_threshold = (absolute_maximum-absolute_minimum)*THRESHOLD;
+
+		double first_maxvalue = samples[larg*DEV_CONST_SAMPLESLUN*0 + larg*s + tid];
+		double last_maxvalue  = samples[larg*DEV_CONST_SAMPLESLUN*0 + larg*s + tid];
+		double first_minvalue = samples[larg*DEV_CONST_SAMPLESLUN*0 + larg*s + tid];
+		double last_minvalue  = samples[larg*DEV_CONST_SAMPLESLUN*0 + larg*s + tid];
+
+		bool firstmax = true;
+		bool firstmin = true;
+
+		bool include_transient = false;
+		
+		RunningStat all;
+		
+		// This function determines the first and last minimum and maximum, using the threshold to remove
+		// spurious values. The first time, it skips the transient (i.e., first 5000 values)
+		determine_minmax(samples, s, &first_maxvalue, &first_minvalue, &last_maxvalue, &last_minvalue, 
+							&firstmax, &firstmin, absolute_threshold, &all, SKIP);
+		
+		//if (tid==0) printf("First max: %.15f\tFirst min: %.15f\tLast max: %.15f\tLast min: %.15f.\n", first_maxvalue, first_minvalue, last_maxvalue, last_minvalue);
+		// printf("[%d] First max: %.15f\tFirst min: %.15f\tLast max: %.15f\tLast min: %.15f.\n", tid, first_maxvalue, first_minvalue, last_maxvalue, last_minvalue);
+
+		// no initial minimum or maximum were found: fitness is 0 (the worst)
+		if (firstmax || firstmin) {
+
+			// if (tid==0) printf(" * Species %d has no extrema, repeating with SKIP=0.\n", s);
+			
+			// try again, including the transient
+			double first_maxvalue = samples[larg*DEV_CONST_SAMPLESLUN*0 + larg*s + tid];
+			double last_maxvalue  = samples[larg*DEV_CONST_SAMPLESLUN*0 + larg*s + tid];
+			double first_minvalue = samples[larg*DEV_CONST_SAMPLESLUN*0 + larg*s + tid];
+			double last_minvalue  = samples[larg*DEV_CONST_SAMPLESLUN*0 + larg*s + tid];
+
+			determine_minmax(samples, s, 
+							&first_maxvalue, &first_minvalue, 
+							&last_maxvalue, &last_minvalue, 
+							&firstmax, &firstmin, 
+							absolute_threshold, &all, 0);
+
+			include_transient = true;
+			
+			// still no minimum and maximum?
+			if (firstmax || firstmin) {
+				//if (tid==0) printf(" * Definitely no extrema, aborting.\n\n");
+				continue;
+			}  		
+			
+		}
+
+		
+
+		double putative;
+		double sd = all.StandardDeviation();	
+		double lc = 1e-5;
+		double pn = 1;
+
+		// just one peak or bottom
+		/*
+		if ((first_maxvalue==last_maxvalue) || (first_minvalue==last_minvalue)) {
+			if (tid==0) printf("First max: %.15f\tFirst min: %.15f\tLast max: %.15f\tLast min: %.15f.\n", first_maxvalue, first_minvalue, last_maxvalue, last_minvalue);
+			//putative = -(0.3 * sd)/max(first_minvalue, first_maxvalue);
+			pn = 0.3;
+		} else {
+			if (include_transient) {
+				if (tid==0) printf("First max: %.15f\tFirst min: %.15f\tLast max: %.15f\tLast min: %.15f.\n", first_maxvalue, first_minvalue, last_maxvalue, last_minvalue);
+				//putative = -(0.2 * sd)/first_maxvalue;
+				pn = 0.2;
+			} else {
+				if (tid==0) printf("First max: %.15f\tFirst min: %.15f\tLast max: %.15f\tLast min: %.15f.\n", first_maxvalue, first_minvalue, last_maxvalue, last_minvalue);
+				// double diff = (first_maxvalue-first_minvalue)/(last_maxvalue-last_minvalue);
+				// putative = -(sd*diff)/first_maxvalue;
+				double firstAmp = (first_maxvalue-first_minvalue);
+				double lastAmp  = (last_maxvalue-last_minvalue);
+				lc=1./(((firstAmp-lastAmp)/firstAmp)+1);
+			}
+		}
+		*/
+
+		// if the peaks/bottoms are during the transient, we use the penalty
+		if (include_transient) pn = 0.3*(1.-it_ratio);
+		
+		// else if we have just ONE maximum or minimum
+		if ((first_maxvalue==last_maxvalue) || (first_minvalue==last_minvalue)) pn = 0.2*(1.-it_ratio);
+
+		// else (more than just one)
+		else {
+			double firstAmp = (first_maxvalue-first_minvalue);
+			double lastAmp  = (last_maxvalue-last_minvalue);
+			// limitcycle = 1 / (1 + Math.abs(firstAmp - lastAmp) / firstAmp) / (1 + Math.abs(firstAmp - lastAmp) / firstAmp);
+			lc =  1. / (1. + abs(firstAmp - lastAmp) / firstAmp) / (1. +  abs(firstAmp - lastAmp) / firstAmp);
+		}
+				
+		putative = - min(1000.0, sd) * lc * pn;		
+		if (temp_fitness>putative) temp_fitness = putative;	
+
+		// if (tid==0) printf("PUTATIVE FITNESS: %.15f (%f, %f, %f).\n\n", putative, sd, lc, pn);
+				
+	}
+
+	fitness[tid]=temp_fitness;	
 }
 
 
@@ -6282,4 +6830,131 @@ __global__ void calculateFitness_old( double* samples, double* target, double* f
 	// fitness[tid] = tid;
 
 };
+*/
+
+
+/*
+__global__ void fix_spectra(cufftComplex* data, unsigned int size, unsigned int SP) {
+
+	unsigned int gid = threadIdx.x + blockDim.x * blockIdx.x;
+
+	// save time and memory accesses
+	unsigned int series = gid/size;
+	unsigned int offset = size*series;
+	cufftComplex temp = data[gid];
+
+	if ( gid-offset < size/2+1 ) {
+
+		// scale
+		temp.x /= size;
+		temp.y /= size;
+
+		// compensate
+		temp.x *=2;
+		temp.y *=2;
+
+		// magnitude
+		temp.x = sqrt( temp.x * temp.x + temp.y * temp.y );
+
+		// update
+		data[gid] = temp;
+
+		if (gid-offset == 0) data[gid].x=0;
+
+	}
+			
+}
+*/
+
+/*
+void calculate_fft( st2det* s2d, double* device_X, std::string exportfile ) {
+	
+		printf(" * Fast Fourier Transform calculation.\n");
+
+		unsigned int tot_points  = s2d->time_instants.size();		// number of samples 
+		unsigned int skip_points = 5000;
+		unsigned int sample_size = tot_points - skip_points;
+		unsigned int SPECTRA = s2d->threads * s2d->species_to_sample.size();	// total number of time series to calculate the spectra (~ species X grns) 
+
+		// copio in locale, per convertire i valori reali in numeri complessi: inefficente, modificare (TODO)
+		double* host_storage = (double*) malloc (sizeof(double) * SPECTRA * tot_points );		
+		cudaMemcpy( host_storage, device_X, sizeof(double) * SPECTRA * tot_points, cudaMemcpyDeviceToHost);
+
+		// inefficiente 
+		cufftComplex* input = (cufftComplex*) malloc ( sizeof(cufftComplex) * sample_size * SPECTRA );
+		// for (unsigned int i=0; i<sample_size * SPECTRA; i++) {
+		for (unsigned int i=0; i<SPECTRA; i++) {
+			for (unsigned int j=skip_points; j<tot_points; j++) {
+				input[ i*sample_size+(j-skip_points) ].x = host_storage[ i*tot_points + j ] ;
+				input[ i*sample_size+(j-skip_points) ].y = 0;
+			}
+		}
+
+		cufftComplex* dev_output;
+		cudaMalloc( (void**)&dev_output, sizeof(cufftComplex) * sample_size * SPECTRA ) ;
+		cudaMemcpy( dev_output, input, sizeof(cufftComplex) * sample_size * SPECTRA, cudaMemcpyHostToDevice);
+
+		cufftHandle plan;
+		if (cufftPlan1d( &plan, sample_size, CUFFT_C2C, SPECTRA ) != CUFFT_SUCCESS) {
+			fprintf(stderr, "CUFFT error: ExecC2C Forward failed");		
+			exit(-1)	;
+		}
+
+		// applichiamo la trasformata
+		if (cufftExecC2C(plan, dev_output, dev_output, CUFFT_FORWARD) != CUFFT_SUCCESS){
+			fprintf(stderr, "CUFFT error: ExecC2C Forward failed");
+			exit(-2);	
+		}
+		cudaThreadSynchronize();
+
+		
+		unsigned int calc_bpg = (sample_size*SPECTRA)/512;			// hardcoded value: it's bad, improve this (TODO)
+		printf(" * Calculated bpg for parallel spectra correction: %d.\n", calc_bpg);
+		if (calc_bpg>65535) {
+			printf("ERROR: too many blocks for FFT-based fitness calculation, aborting.\n");
+			exit(-10);
+		}
+
+		dim3 fix_bpg(calc_bpg);
+		dim3 fix_tpb(512);
+		fix_spectra<<< fix_bpg, fix_tpb >>> ( dev_output, sample_size, SPECTRA );
+		CudaCheckError();
+		
+		cudaThreadSynchronize();
+
+		// FFT export		
+		if ( exportfile.size()>0 ) {
+			
+			cudaMemcpy(input, dev_output, sizeof(cufftComplex) * sample_size * SPECTRA, cudaMemcpyDeviceToHost );
+			
+			std::ofstream outfile(exportfile.c_str());
+			if (!outfile.is_open()) {
+				perror("Cannot export spectra.");
+			} else {
+				printf(" * Exporting spectra... \n");
+				for (unsigned int t=0; t<s2d->threads; t++) {
+					// printf("Thread %d.\n", t);
+					for (unsigned int s=0; s<s2d->species_to_sample.size(); s++) {				
+						//printf("Species %d.\n",s);
+						for (unsigned int ti=0; ti<sample_size/2; ti++) {
+							// printf("(%d) %.3f\t", ti, input[ grns->time_instants_offset[g]+ s*grns->time_instants.size() + ti  ].x);
+							unsigned int indice= t*s2d->species*sample_size+s2d->species_to_sample[s]*sample_size+ti;
+							// printf("(%d) %.3f\t", ti, input[ indice ].x);
+							outfile << input[ indice ].x << "\t";
+						}
+						printf("\n");
+						outfile << std::endl;
+					}
+					printf("\n");
+					outfile << std::endl;
+				}
+				outfile.close();
+				printf(" done.\n");
+			}
+		}
+		
+					
+		// dispose everything
+		cufftDestroy(plan);
+}
 */

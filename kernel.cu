@@ -17,18 +17,21 @@ Bibliography:
 
 - Nobile M.S., Cazzaniga P., Besozzi D., Mauri G.: GPU-accelerated simulations of
 mass-action kinetics models with cupSODA. The Journal of Supercomputing, 
-vol. 69, issue 1, pp.17–24, 2014
+vol. 69, issue 1, pp.17-24, 2014
 
 - Petzold L.: Automatic selection of methods for solving stiff and nonstiff 
 systems of ordinary differential equations. SIAM Journal of Scientific and
-Statistical Computing, 4(1):136–148, 1983
+Statistical Computing, 4(1):136-148, 1983
 
 Direct link to the cupSODA paper: http://link.springer.com/article/10.1007/s11227-014-1208-8
 
 */
 
+#define NOMINMAX
+
+#include <algorithm>
 #include <stdio.h>
-#include <math.h>
+#include <cmath>		// std::min, std::max
 #include <iostream>
 #include <fstream>
 #include <vector>
@@ -38,11 +41,12 @@ Direct link to the cupSODA paper: http://link.springer.com/article/10.1007/s1122
 #include "input_reader.h"
 #include "stoc2det.h"
 #include <cuda.h>
-
+#include <iostream>     // std::cout, std::fixed
+#include <iomanip>      // std::setprecision
+#include <string>
 
 // #define VERBOSE
 #define DUMP
-
 #define USE_NEW_ODE
 
 
@@ -70,9 +74,17 @@ int main(int argc, char** argv)
 
 	bool just_fitness = true;
 	bool print_fitness = false;
+	bool print_yukifitness = false;
+	bool print_nomanfitness = false;
+	bool dump_fft = false;
+	bool print_dynamics = false;
 
 	if (argc>6) just_fitness  = std::string(argv[6])!="0";
 	if (argc>6) print_fitness = std::string(argv[6])=="2";
+	if (argc>6) print_yukifitness = std::string(argv[6])=="3";
+	if (argc>6) print_nomanfitness = std::string(argv[6])=="4";
+	if (argc>6) dump_fft = std::string(argv[6])=="5";
+	if (argc>6) print_dynamics = std::string(argv[6])=="6";
 	
 	bool ACTIVATE_SHARED_MEMORY = false;
 	bool ACTIVATE_CONSTANT_MEMORY = false;
@@ -82,46 +94,58 @@ int main(int argc, char** argv)
 		ACTIVATE_CONSTANT_MEMORY = std::string(argv[7])=="2";
 	}
 
-	bool DUMP_DEBUG = false;
+	int DUMP_DEBUG = 0;
+	float EA_ITERATION =-1;
 
 	if (argc>8) {
-		DUMP_DEBUG = std::string(argv[8])!="0";
+		DUMP_DEBUG = atoi(std::string(argv[8]).c_str());		
 	}
 
-
+	if (argc>9) {
+		EA_ITERATION = atof( std::string(argv[9]).c_str() );
+	}
 
 	/* The st2det object load and contains all the information related to the model. */
 	st2det* s2d = new st2det();
 	s2d->blocks = atoi(argv[2]);		// TODO
-	bool a = s2d->open_files(argv[1], argv[3], argv[4], true, DUMP_DEBUG, just_fitness, ACTIVATE_CONSTANT_MEMORY);
+	bool a = s2d->open_files(argv[1], argv[3], argv[4], true, DUMP_DEBUG, just_fitness, ACTIVATE_CONSTANT_MEMORY, !(dump_fft|print_yukifitness|print_nomanfitness));
 	
-	if (!print_fitness) {
+	
+	if (a!=true) {
+		perror("ERROR while opening input files:");
+		exit(-3);
+	} else {
+		if (!(print_fitness|print_yukifitness|print_nomanfitness|print_dynamics)) 		printf(" * All files correct\n");		
+	}
+
+	if (!(print_fitness|print_yukifitness|print_nomanfitness|print_dynamics)) {
 		if ( just_fitness ) {
 			printf(" * Fitness calculation: ENABLED \n");	
 		} else {
 			printf(" * Fitness calculation: DISABLED \n");
 		}
 	}
-	
-	if (a!=true) {
-		perror("ERROR while opening input files:");
-		exit(-3);
-	} else {
-		if (!print_fitness) 		printf(" * All files correct\n");		
+
+	if (print_dynamics) {
+		// printf(" * Dynamics redirected to stdout.\n");
+		just_fitness = false;
 	}
 
 	/* This function sets all the constant values in the GPU, storing them in constant memory. */
 	SetConstants(s2d->species, s2d->reactions, s2d->ODE_lun, s2d->JAC_lun, s2d->species_to_sample.size(), s2d->time_instants.size(), s2d->repetitions, s2d->experiments, s2d->threads, false);
 
-	param_t* device_flattenODE;
-	unsigned int* device_offsetODE;
-	param_t* device_flattenJAC;
-	unsigned int* device_offsetJAC;
-	unsigned int* device_species_to_sample;
+	conc_t*			host_X;
+	param_t*		device_flattenODE;
+	unsigned int*	device_offsetODE;
+	param_t*		device_flattenJAC;
+	unsigned int*	device_offsetJAC;
+	unsigned int*	device_species_to_sample;
+	conc_t*			device_X;
+	conc_t*			device_target;
 
-	conc_t* device_X;
-	conc_t* host_X;
-	conc_t* device_target;
+	double* device_fitness;
+	double* host_fitness;
+	char* device_swarms;
 
 	/* Allocate and store the ODE system and the Jacobian matrix */
 	cudaMalloc((void**)&device_flattenODE,sizeof(param_t)*s2d->ODE_lun);
@@ -147,7 +171,7 @@ int main(int argc, char** argv)
 
 	/* Allocates the memory space for samples and the target time-series */
 	cudaMalloc((void**)&device_X, sizeof( conc_t ) * s2d->species_to_sample.size() * s2d->time_instants.size() * s2d->threads );
-	CudaCheckError();
+	CudaCheckErrorRelease();
 	cudaMalloc((void**)&device_target, sizeof( conc_t ) * s2d->repetitions * s2d->experiments * s2d->target_quantities * s2d->time_instants.size() );
 	CudaCheckError();
 	cudaMemcpy(device_target,s2d->global_time_series, sizeof( conc_t ) * s2d->repetitions * s2d->experiments * s2d->target_quantities * s2d->time_instants.size() ,cudaMemcpyHostToDevice);
@@ -202,7 +226,7 @@ int main(int argc, char** argv)
 	 // const int lrn = 20 + 16*s2d->species;
 	 const int lrs = 22+9*s2d->species + (s2d->species*s2d->species);
 	 // const int LRW = max(lrn,lrs);
-	 const int LRW = 22+s2d->species*max(16,s2d->species+9);	 
+	 const int LRW = 22+s2d->species*std::max(16,(int)(s2d->species+9));	 
 	 const int LIW = 20+s2d->species;	 
 	 
 	 
@@ -331,10 +355,11 @@ int main(int argc, char** argv)
 	{
 
 		/* Si può parallelizzare: TODO */		
-		for (unsigned int i=0; i<s2d->threads; i++) {
-			tout[i] = s2d->time_instants[ti];
-		}	
+		for (unsigned int i=0; i<s2d->threads; i++) tout[i] = s2d->time_instants[ti];		
+		
 		cudaMemcpy(_Dtout,tout,sizeof(double)*s2d->threads,cudaMemcpyHostToDevice);
+
+		// printf(" * Time step to %f.\n", tout[0]);
 					
 		dim3 BlocksPerGrid(s2d->blocks,1,1);
 		dim3 ThreadsPerBlock(s2d->tpb,1,1);
@@ -347,7 +372,7 @@ int main(int argc, char** argv)
 		CudaCheckError();
 
 		/* Print debug information (if requested), for each thread */
-		if (DUMP_DEBUG) {
+		if (DUMP_DEBUG==2) {
 			cudaMemcpy(istate,_Distate, sizeof(int)*s2d->threads,cudaMemcpyDeviceToHost);
 			printf(" * Dumping istates:\n");
 			for (unsigned int th=0; th<s2d->threads; th++) {				
@@ -368,12 +393,18 @@ int main(int argc, char** argv)
 				printf("\n");
 			}
 
+			cudaMemcpy(iwork,_Diwork, sizeof(int)*LIW*s2d->threads,cudaMemcpyDeviceToHost);
+
+			for (unsigned int th=0; th<s2d->threads; th++) {
+				printf("[Thr%d] steps so far: %d, ODE evals: %d, Jac evals: %d.\n", th, iwork[th*20+10], iwork[th*20+11], iwork[th*20+12]);
+			}
+
 			printf("\n");
 		}
 
     }
 
-	if (!just_fitness) {
+	if ((!just_fitness) && (!print_dynamics)) {
 		cudaEventRecord( stop, 0 );
 		cudaEventSynchronize( stop );
 		float tempo;
@@ -384,16 +415,20 @@ int main(int argc, char** argv)
 		cudaEventDestroy(stop); 
 	}
 	
-	unsigned int DEV_CONST_SAMPLESLUN = s2d->species_to_sample.size();
+	unsigned int DEV_CONST_SAMPLESLUN = (unsigned int)s2d->species_to_sample.size();
 
 	cudaThreadSynchronize();
 
+	// Calculate the FT of the signals (i.e., time-series)
+	if (dump_fft) {
+
+		// calculate_fft(s2d, device_X, "prova_fft");
+		exit(0);
+
+	}
+
 	/* If we are just calculating a fitness value, avoid creating and dumping to output files of simulations */
 	if (just_fitness) {
-
-		double* device_fitness;
-		double* host_fitness;
-		char* device_swarms;
 
 		host_fitness = (double*) malloc ( sizeof(double) * s2d->threads );
 
@@ -407,15 +442,23 @@ int main(int argc, char** argv)
 		dim3 BlocksPerGrid(s2d->blocks,1,1);
 		dim3 ThreadsPerBlock(s2d->tpb,1,1);
 
-		calculateFitness<<<BlocksPerGrid,ThreadsPerBlock>>>( device_X, device_target, device_fitness, device_swarms );
-		CudaCheckError();
+		if (print_yukifitness)  {
+			// calculateFitnessYuki<<<BlocksPerGrid,ThreadsPerBlock>>>( device_X, device_fitness);
+			CudaCheckError();			
+		} else if (print_nomanfitness) {
+			calculateFitnessNoman<<<BlocksPerGrid,ThreadsPerBlock>>>( device_X, device_fitness, EA_ITERATION);
+			CudaCheckError();			
+		} 	else {
+			calculateFitness<<<BlocksPerGrid,ThreadsPerBlock>>>( device_X, device_target, device_fitness, device_swarms );
+			CudaCheckError();
+		}
 
 		// cudaMemcpy(device_swarms,s2d->thread2experiment,sizeof(char)*s2d->threads, cudaMemcpyDeviceToHost);
 		cudaMemcpy(host_fitness,device_fitness,sizeof(double)*s2d->threads, cudaMemcpyDeviceToHost);
 		CudaCheckError();
 
 		// if we are not just printing on video the fitness values, open the output file "pref_allfit"
-		if ( !print_fitness ) {
+		if ( !(print_fitness | print_yukifitness | print_nomanfitness) ) {
 
 		#ifdef _WIN32
 			std::string comando_crea_cartella("md ");
@@ -459,92 +502,96 @@ int main(int argc, char** argv)
 			}
 
 		}
-		
 
-		// libero memoria
-		free(host_X);
 		free(host_fitness);
-	
-		// libero memoria in GPU (TODO)
-		cudaFree(device_X);
-		cudaFree(device_compressed_odes);
-		cudaFree(device_constants);
-		cudaFree(device_flattenJAC);
-		cudaFree(device_flattenODE);
-		cudaFree(device_offsetJAC);
-		cudaFree(device_offsetODE);
-		cudaFree(device_species_to_sample);	
 		cudaFree(device_fitness);	
 		cudaFree(device_swarms);
 		cudaFree(device_target);
 
-		exit(0);
-	} 
 
+	}  // end if just fitness
 
-	// No fitness: let's output the simulations
-	cudaMemcpy(host_X,device_X, sizeof(conc_t) * s2d->species_to_sample.size() * s2d->threads * s2d->time_instants.size(), cudaMemcpyDeviceToHost);
+	if (!just_fitness) {
 
-	#ifdef _WIN32
-		std::string comando_crea_cartella("md ");
-		comando_crea_cartella.append(s2d->DEFAULT_OUTPUT);		
-		system(comando_crea_cartella.c_str());
-	#else
-		std::string comando_crea_cartella("mkdir ");
-		comando_crea_cartella.append(s2d->DEFAULT_OUTPUT);
-		system(comando_crea_cartella.c_str());
-	#endif
+		// No fitness: let's save the output of simulations on the hard disk
+		cudaMemcpy(host_X,device_X, sizeof(conc_t) * s2d->species_to_sample.size() * s2d->threads * s2d->time_instants.size(), cudaMemcpyDeviceToHost);
 
-	for ( unsigned int tid=0; tid<s2d->actual_threads; tid++ ) {
+		if (print_dynamics) {
+
+			for ( unsigned int tid=0; tid<s2d->actual_threads; tid++ ) {
 				
-		std::string outputfile(s2d->DEFAULT_OUTPUT);
-		outputfile.append("/");
-		outputfile.append(s2d->DEFAULT_PREFIX);
-		outputfile.append("_");
-		outputfile.append( convertInt(tid) );
-
-		std::ofstream dump2(outputfile.c_str());
-
-		if (! dump2.good() ) {
-			perror("ERROR: cannot save dynamics");
-			// system("pause");
-			exit(-2);
-		}
-	 
+				std::cout << std::setprecision(15);
 		
-		unsigned int larg = s2d->threads;
-		unsigned int DEV_CONST_SAMPLESLUN = s2d->species_to_sample.size();
-		
+				unsigned int larg = s2d->threads;
+				unsigned int DEV_CONST_SAMPLESLUN = (unsigned int) s2d->species_to_sample.size();		
 	
-		for (unsigned int campione=0; campione<s2d->time_instants.size(); campione++) {
-
-			dump2 << s2d->time_instants[campione] << "\t";
-
-			for (unsigned int s=0; s<s2d->species_to_sample.size(); s++) {
-
-				// ACCESS_SAMPLE = larg*DEV_CONST_SAMPLESLUN*campione + larg*s + tid 
-				
-				dump2 << host_X[ ACCESS_SAMPLE ];
-				if ( s!=s2d->species_to_sample.size()-1 )
-					dump2 << "\t";
+				for (unsigned int campione=0; campione<s2d->time_instants.size(); campione++) {
+					std::cout << s2d->time_instants[campione] << "\t";
+					for (unsigned int s=0; s<s2d->species_to_sample.size(); s++) {				
+						std::cout << host_X[ ACCESS_SAMPLE ];
+						if ( s!=s2d->species_to_sample.size()-1 )
+							std::cout << "\t";
+					}
+					std::cout << "\n";
+				}
+				std::cout << "\n";
 
 			}
 
-			dump2 << "\n";
+		} else {
 
-		}
+			// """crossplatform""" folder creation (TODO)
+			#ifdef _WIN32
+				std::string comando_crea_cartella("md ");
+				comando_crea_cartella.append(s2d->DEFAULT_OUTPUT);		
+				system(comando_crea_cartella.c_str());
+			#else
+				std::string comando_crea_cartella("mkdir ");
+				comando_crea_cartella.append(s2d->DEFAULT_OUTPUT);
+				system(comando_crea_cartella.c_str());
+			#endif
 
-		// dump2 << "\n\n";
+			for ( unsigned int tid=0; tid<s2d->actual_threads; tid++ ) {
+				
+				std::string outputfile(s2d->DEFAULT_OUTPUT);
+				outputfile.append("/");
+				outputfile.append(s2d->DEFAULT_PREFIX);
+				outputfile.append("_");
+				outputfile.append( convertInt(tid) );
 
+				std::ofstream dump2(outputfile.c_str());
 
-		dump2.close();
-
-	}
-
-	// Free local memory
-	free(host_X);
+				if (! dump2.good() ) {
+					perror("ERROR: cannot save dynamics");
+					exit(-2);
+				}
+	 
+				dump2 << std::setprecision(15);
+		
+				unsigned int larg = s2d->threads;
+				unsigned int DEV_CONST_SAMPLESLUN = (unsigned int) s2d->species_to_sample.size();		
 	
-	// Free GPU's memory
+				for (unsigned int campione=0; campione<s2d->time_instants.size(); campione++) {
+					dump2 << s2d->time_instants[campione] << "\t";
+					for (unsigned int s=0; s<s2d->species_to_sample.size(); s++) {				
+						dump2 << host_X[ ACCESS_SAMPLE ];
+						if ( s!=s2d->species_to_sample.size()-1 )
+							dump2 << "\t";
+					}
+					dump2 << "\n";
+				}
+				dump2.close();
+
+			} // end for
+
+		} // end print fitness
+
+	} // end not just fitness
+
+	// release memory on the CPU
+	free(host_X);
+		
+	// release memory on the GPU
 	cudaFree(device_X);
 	cudaFree(device_compressed_odes);
 	cudaFree(device_constants);
@@ -554,7 +601,7 @@ int main(int argc, char** argv)
 	cudaFree(device_offsetODE);
 	cudaFree(device_species_to_sample);	
 
-    return 0;
+	    return 0;
 } 
 
 
