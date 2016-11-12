@@ -6,6 +6,10 @@ cupSODA is a black-box deterministic simulator of biological systems that exploi
 cupSODA allows to efficiently execute in parallel large numbers of simulations, which are usually required to investigate the emergent dynamics of a given biological system under different conditions.
 cupSODA works by automatically deriving the system of ordinary differential equations from a reaction-based mechanistic model, defined according to the mass-action kinetics, and then exploiting the numerical integration algorithm, LSODA. 
 
+## HOW TO CITE cupSODA
+
+Nobile M.S., Cazzaniga P., Besozzi D., Mauri G.: GPU-accelerated simulations of mass-action kinetics models with cupSODA, Journal of Supercomputing, vol. 69, issue 1, pp.17–24, 2014
+
 
 ## DEPENDENCIES
 
