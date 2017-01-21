@@ -111,8 +111,7 @@ public:
 
 	}
 
-	// bool open_files( std::string folder, std::string output, std::string prefix, bool use_cmatrix, bool dump, bool just_fit, bool use_constant);
-	bool st2det::open_files( std::string folder, std::string output, std::string prefix, bool use_cmatrix, bool dump, bool just_fit, bool use_constant, bool traditional_fitness);
+	bool open_files( std::string folder, std::string output, std::string prefix, bool use_cmatrix, bool dump, bool just_fit, bool use_constant, bool traditional_fitness);
 	void dump_odes();
 	void dump_jac(bool print_to_video=false);
 
