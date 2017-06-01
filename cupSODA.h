@@ -12,6 +12,7 @@ See file COPYING for copyright and licensing information.
 #include "input_reader.h"
 #include "stoc2det.h"
 #include <cmath>
+#include <cstdio>
 
 // #define min(a,b) ((a) <= (b) ? (a) : (b))
 // #define max(a,b) ((a) >= (b) ? (a) : (b))
