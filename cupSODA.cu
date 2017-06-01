@@ -6762,7 +6762,7 @@ __global__ void calculateFitnessNoman(double* const samples, double* fitness, do
 			lc =  1. / (1. + abs(firstAmp - lastAmp) / firstAmp) / (1. +  abs(firstAmp - lastAmp) / firstAmp);
 		}
 				
-		putative = - min(1000.0, sd) * lc * pn;		
+		putative = - min(5.0, sd) * lc * pn;		
 		if (temp_fitness>putative) temp_fitness = putative;	
 
 		// if (tid==0) printf("PUTATIVE FITNESS: %.15f (%f, %f, %f).\n\n", putative, sd, lc, pn);
