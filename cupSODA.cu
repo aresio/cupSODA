@@ -255,7 +255,7 @@ __device__ int dlsoda_(myFex f, int *neq, double *y, double *t, double *tout, in
 	
 	
 	int mord[2] = { 12,5 };
-	int mxstp0 = 500;
+	int mxstp0 = iwork[5];  // experimental
 	int mxhnl0 = 10;
 	
     /* System generated locals */

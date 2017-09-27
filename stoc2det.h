@@ -101,7 +101,7 @@ public:
 		this->JAC_lun = 0;
 
 		this->rtol = (double)1e-4;
-		this->max_steps = 0;
+		this->max_steps = 500;
 
 		// this->time_instants.push_back(0);
 

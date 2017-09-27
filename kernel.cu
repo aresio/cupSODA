@@ -396,7 +396,7 @@ int main(int argc, char** argv)
 			cudaMemcpy(iwork,_Diwork, sizeof(int)*LIW*s2d->threads,cudaMemcpyDeviceToHost);
 
 			for (unsigned int th=0; th<s2d->threads; th++) {
-				printf("[Thr%d] steps so far: %d, ODE evals: %d, Jac evals: %d.\n", th, iwork[th*20+10], iwork[th*20+11], iwork[th*20+12]);
+				printf("[Thr%d] steps so far: %d, ODE evals: %d, Jac evals: %d.\n", th, iwork[th*LIW+10], iwork[th*LIW+11], iwork[th*LIW+12]);
 			}
 
 			printf("\n");
