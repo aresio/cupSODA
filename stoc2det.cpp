@@ -436,7 +436,10 @@ bool st2det::open_files( std::string folder, std::string output, std::string pre
 			feed_vector[s] = atof(a[s].c_str());
 			if (feed_vector[s]!=0) {
 				for (unsigned int t=0; t<threads; t++) {				
-					X[t*species+s] = feed_vector[s];
+					if (StochasticModel) 
+						X[t*species+s] = feed_vector[s] / (this->c_moles_molec);
+					else
+						X[t*species+s] = feed_vector[s];
 				}
 			}
 		}
