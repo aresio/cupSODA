@@ -85,6 +85,7 @@ int main(int argc, char** argv)
 	if (argc>6) print_nomanfitness = std::string(argv[6])=="4";
 	if (argc>6) dump_fft = std::string(argv[6])=="5";
 	if (argc>6) print_dynamics = std::string(argv[6])=="6";
+	if (print_dynamics) just_fitness=false;
 	
 	bool ACTIVATE_SHARED_MEMORY = false;
 	bool ACTIVATE_CONSTANT_MEMORY = false;
