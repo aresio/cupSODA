@@ -6217,7 +6217,7 @@ __global__ void calculateFitness( double* simulation, double* target, double* ou
 	for (unsigned int campione=1; campione<DEV_CONST_SAMPLES; campione++) {
 		for (unsigned int s=0; s<DEV_CONST_SAMPLESLUN; s++) {
 			unsigned int sid = SWARMS*DEV_CONST_SAMPLESLUN*campione + DEV_CONST_SAMPLESLUN*D + s;
-			subfitness += abs( simulation[ACCESS_SAMPLE] - target[sid] ) /target[sid];			
+			subfitness += abs( simulation[ACCESS_SAMPLE] - target[sid] ) / (max(1e-15, target[sid]));			
 			//if (tid==WATCHED && s==0) {
 			// if (tid==0) 				printf("%d, %d, %d, %f\t%f\n", campione, sid, s, simulation[ACCESS_SAMPLE],  target[sid]);
 			//}
