@@ -61,14 +61,14 @@ std::string convertInt(int number)
    return ss.str();//return a string with the contents of the stream
 }
 
-int main(int argc, char** argv)  
+int main(int argc, char **argv)
 {
 
 	/* This function verifies that all non-optional arguments are correctly passed to cupSODA */
 	if ( !CheckArguments(argc, argv)) {
 		exit(-1);
 	}
-	
+
 	/* The following code determines and sets the optional values. */
 	unsigned int GPU = atoi(argv[5]);
 
@@ -86,10 +86,10 @@ int main(int argc, char** argv)
 	if (argc>6) dump_fft = std::string(argv[6])=="5";
 	if (argc>6) print_dynamics = std::string(argv[6])=="6";
 	if (print_dynamics) just_fitness=false;
-	
+
 	bool ACTIVATE_SHARED_MEMORY = false;
 	bool ACTIVATE_CONSTANT_MEMORY = false;
-	
+
 	if (argc>7) {
 		ACTIVATE_SHARED_MEMORY = std::string(argv[7])!="0";
 		ACTIVATE_CONSTANT_MEMORY = std::string(argv[7])=="2";
@@ -99,7 +99,7 @@ int main(int argc, char** argv)
 	float EA_ITERATION =-1;
 
 	if (argc>8) {
-		DUMP_DEBUG = atoi(std::string(argv[8]).c_str());		
+		DUMP_DEBUG = atoi(std::string(argv[8]).c_str());
 	}
 
 	if (argc>9) {
@@ -109,19 +109,22 @@ int main(int argc, char** argv)
 	/* The st2det object load and contains all the information related to the model. */
 	st2det* s2d = new st2det();
 	s2d->blocks = atoi(argv[2]);		// TODO
-	bool a = s2d->open_files(argv[1], argv[3], argv[4], true, DUMP_DEBUG, just_fitness, ACTIVATE_CONSTANT_MEMORY, !(dump_fft|print_yukifitness|print_nomanfitness));
-	
-	
+	bool a = s2d->open_files(argv[1], argv[3], argv[4], true, DUMP_DEBUG, just_fitness, ACTIVATE_CONSTANT_MEMORY,
+							 !(dump_fft | print_yukifitness | print_nomanfitness));
+
+
 	if (a!=true) {
 		perror("ERROR while opening input files:");
 		exit(-3);
 	} else {
-		if (!(print_fitness|print_yukifitness|print_nomanfitness|print_dynamics)) 		printf(" * All files correct\n");		
+		if (!(print_fitness | print_yukifitness | print_nomanfitness | print_dynamics)) {
+			printf(" * All files correct\n");
+		}
 	}
 
 	if (!(print_fitness|print_yukifitness|print_nomanfitness|print_dynamics)) {
-		if ( just_fitness ) {
-			printf(" * Fitness calculation: ENABLED \n");	
+		if (just_fitness) {
+			printf(" * Fitness calculation: ENABLED \n");
 		} else {
 			printf(" * Fitness calculation: DISABLED \n");
 		}
@@ -133,20 +136,14 @@ int main(int argc, char** argv)
 	}
 
 	/* This function sets all the constant values in the GPU, storing them in constant memory. */
-	SetConstants(s2d->species, s2d->reactions, s2d->ODE_lun, s2d->JAC_lun, s2d->species_to_sample.size(), s2d->time_instants.size(), s2d->repetitions, s2d->experiments, s2d->threads, false);
+	SetConstants(s2d->species, s2d->reactions, s2d->ODE_lun, s2d->JAC_lun, s2d->species_to_sample.size(),
+				 s2d->time_instants.size(), s2d->repetitions, s2d->experiments, s2d->threads, false);
 
-	conc_t*			host_X;
-	param_t*		device_flattenODE;
-	unsigned int*	device_offsetODE;
-	param_t*		device_flattenJAC;
-	unsigned int*	device_offsetJAC;
-	unsigned int*	device_species_to_sample;
-	conc_t*			device_X;
-	conc_t*			device_target;
 
-	double* device_fitness;
-	double* host_fitness;
-	char* device_swarms;
+	param_t *device_flattenODE, *device_flattenJAC;
+	conc_t *device_target;
+	unsigned int *device_offsetODE, *device_offsetJAC, *device_species_to_sample;
+
 
 	/* Allocate and store the ODE system and the Jacobian matrix */
 	cudaMalloc((void**)&device_flattenODE,sizeof(param_t)*s2d->ODE_lun);
@@ -163,7 +160,7 @@ int main(int argc, char** argv)
 	cudaMalloc((void**)&device_offsetODE,sizeof(unsigned int)*s2d->species);
 	CudaCheckError();
 	cudaMemcpy(device_offsetODE,s2d->ODE_offset,sizeof(unsigned int)*s2d->species,cudaMemcpyHostToDevice);
-	CudaCheckError();	
+	CudaCheckError();
 	cudaMalloc((void**)&device_offsetJAC,sizeof(unsigned int)*s2d->species*s2d->species);
 	CudaCheckError();
 	cudaMemcpy(device_offsetJAC,s2d->JAC_offset,sizeof(unsigned int)*s2d->species*s2d->species,cudaMemcpyHostToDevice);
@@ -171,109 +168,86 @@ int main(int argc, char** argv)
 
 
 	/* Allocates the memory space for samples and the target time-series */
-	cudaMalloc((void**)&device_X, sizeof( conc_t ) * s2d->species_to_sample.size() * s2d->time_instants.size() * s2d->threads );
-	CudaCheckErrorRelease();
 	cudaMalloc((void**)&device_target, sizeof( conc_t ) * s2d->repetitions * s2d->experiments * s2d->target_quantities * s2d->time_instants.size() );
 	CudaCheckError();
 	cudaMemcpy(device_target,s2d->global_time_series, sizeof( conc_t ) * s2d->repetitions * s2d->experiments * s2d->target_quantities * s2d->time_instants.size() ,cudaMemcpyHostToDevice);
 	CudaCheckError();
-	host_X = (conc_t*) malloc ( sizeof( conc_t ) * s2d->species_to_sample.size() * s2d->time_instants.size() * s2d->threads );
+
+	conc_t *host_X;
+	cudaMallocManaged((void **) &host_X,
+					  sizeof(conc_t) * s2d->species_to_sample.size() * s2d->time_instants.size() * s2d->threads);
 	if (host_X==NULL) {
 		perror("ERROR allocating states\n");
 		exit(-14);
 	}
-	memset( host_X, 0, sizeof( conc_t ) * s2d->species_to_sample.size() * s2d->time_instants.size() * s2d->threads );
-	
+	memset(host_X, 0, sizeof(conc_t) * s2d->species_to_sample.size() * s2d->time_instants.size() * s2d->threads);
+
 	/* Load the initial state of the system, according to input files */
 	for (unsigned int ss=0; ss<s2d->species_to_sample.size(); ss++) {
 		for (unsigned int t=0; t<s2d->threads; t++) {
-			host_X[ s2d->threads*ss + t ] = s2d->X[ s2d->species_to_sample[ss] ]; 
+			host_X[s2d->threads * ss + t] = s2d->X[s2d->species_to_sample[ss]];
 		}
-	}	
-	cudaMemcpy(device_X,host_X,sizeof(conc_t) * s2d->species_to_sample.size() * s2d->time_instants.size() * s2d->threads, cudaMemcpyHostToDevice );
-	CudaCheckError();
-	
+	}
 
 	/* Allocate and store the species to be sampled */
 	cudaMalloc((void**)&device_species_to_sample, sizeof( unsigned int ) * s2d->species_to_sample.size() );
 	cudaMemcpy(device_species_to_sample,&s2d->species_to_sample[0],sizeof(unsigned int) * s2d->species_to_sample.size(),cudaMemcpyHostToDevice);
 	CudaCheckError();
-	
-		
+
+
 	///// DEBUG //////
 	int* h_debug = (int*) malloc ( sizeof(int)*s2d->threads );
 	int* d_debug;
-	cudaMalloc((void**)&d_debug,sizeof(int)*s2d->threads);	
-	CudaCheckError();  
+	cudaMalloc((void **) &d_debug, sizeof(int) * s2d->threads);
+	CudaCheckError();
 	///// DEBUG //////
 
-	
-	 /* Local variables */
-	 double* constants = (double*) malloc( sizeof(double) *s2d->threads*s2d->reactions );
-     double *t = (double*)malloc(sizeof(double)*s2d->threads);
-	 double *y = (double*)malloc(sizeof(double)*s2d->species*s2d->threads);
-     int *jt = (int*)malloc(sizeof(int)*s2d->threads);
-     int *neq = (int*)malloc(sizeof(int)*s2d->threads);
-	 int *liw = (int*)malloc(sizeof(int)*s2d->threads);
-	 int *lrw = (int*)malloc(sizeof(int)*s2d->threads);     
-	 double *atol = (double*)malloc(sizeof(double)*s2d->species*s2d->threads);
-     int *itol =(int*) malloc(sizeof(int)*s2d->threads);
-	 int *iopt =(int*) malloc(sizeof(int)*s2d->threads);
-     double *rtol = (double*)malloc(sizeof(double)*s2d->threads);
-     int *iout =(int*) malloc(sizeof(int)*s2d->threads);
-     double *tout =(double*) malloc(sizeof(double)*s2d->threads);
-     int *itask = (int*)malloc(sizeof(int)*s2d->threads);
-		 	 
-	 // const int lrn = 20 + 16*s2d->species;
-	 const int lrs = 22+9*s2d->species + (s2d->species*s2d->species);
-	 // const int LRW = max(lrn,lrs);
-	 const int LRW = 22+s2d->species*std::max(16,(int)(s2d->species+9));	 
-	 const int LIW = 20+s2d->species;	 
-	 
-	 
-	double *rwork = (double*)malloc(sizeof(double)*LRW*s2d->threads);
-	memset(rwork, 0, sizeof(double)*LRW*s2d->threads); // TEST
+	/* points to current time and state */
+	double *t, *y;
+	cudaMallocManaged((void **) &y, sizeof(double) * s2d->species * s2d->threads);
+	cudaMallocManaged((void **) &t, sizeof(double) * s2d->threads);
 
-	int *iwork = (int*) malloc(sizeof(int)*LIW*s2d->threads);     
-	memset(iwork, 0, sizeof(int)*LIW*s2d->threads); // TEST
+	/* Local variables */
+	const int LRW = 22 + s2d->species * std::max(16, (int) (s2d->species + 9));
+	const int LIW = 20 + s2d->species;
+	/* Pointers to unified memory areas of LSODA data structures */
 
-	 int *istate = (int*)malloc(sizeof(int)*s2d->threads);
-	struct cuLsodaCommonBlock* common = (struct cuLsodaCommonBlock*) malloc(sizeof(struct cuLsodaCommonBlock)*s2d->threads);
-	struct cuLsodaCommonBlock *Hcommon = common;
+	double *rwork, *tout, *rtol, *atol, *constants;
+	int *istate, *iwork, *itask, *iout, *iopt, *itol, *lrw, *liw, *neq, *jt;
 
+	cudaMallocManaged((void **) &constants, sizeof(double) * s2d->threads * s2d->reactions);
+	cudaMallocManaged((void **) &jt, sizeof(int) * s2d->threads);
+	cudaMallocManaged((void **) &neq, sizeof(int) * s2d->threads);
+	cudaMallocManaged((void **) &liw, sizeof(int) * s2d->threads);
+	cudaMallocManaged((void **) &lrw, sizeof(int) * s2d->threads);
+	cudaMallocManaged((void **) &itol, sizeof(int) * s2d->threads);
+	cudaMallocManaged((void **) &iopt, sizeof(int) * s2d->threads);
+	cudaMallocManaged((void **) &iout, sizeof(int) * s2d->threads);
+	cudaMallocManaged((void **) &tout, sizeof(int) * s2d->threads);
+	cudaMallocManaged((void **) &itask, sizeof(int) * s2d->threads);
+	cudaMallocManaged((void **) &rwork, sizeof(double) * LRW * s2d->threads);
+	cudaMallocManaged((void **) &rtol, sizeof(double) * LRW * s2d->threads);
+	cudaMallocManaged((void **) &atol, sizeof(double) * s2d->species * s2d->threads);
+	cudaMallocManaged((void **) &istate, sizeof(struct cuLsodaCommonBlock) * s2d->threads);
+	cudaMallocManaged((void **) &iwork, sizeof(int) * LIW * s2d->threads);
 
-	/* Pointers to GPU's global memory areas of LSODA data structures */
-	double* device_constants;
-	double	*_Dt;
-	double	*_Dy;	
-	int	*_Djt;
-	int	*_Dneq;
-	int	*_Dliw;
-	int	*_Dlrw;
-    double	*_Datol;
-    int	*_Ditol;
-	int	*_Diopt;
-    double	*_Drtol;
-    int	*_Diout;
-    double	*_Dtout;
-    int	*_Ditask;
-	int	*_Diwork;	
-    double	*_Drwork;	
-	int	*_Distate;
-	struct cuLsodaCommonBlock *_Dcommon;	
-	
+	struct cuLsodaCommonBlock *Hcommon;
+	cudaMallocManaged((void **) &Hcommon, sizeof(struct cuLsodaCommonBlock) * s2d->threads);
+	cuLsodaCommonBlockInit(Hcommon, s2d->threads);
+	CudaCheckError();
 	/* Method instantiations for Derivative and Jacobian functions to send to template */
 	myFex fex;
 	myJex jex;
 
 	/* Assignment of initial values to locals */
 	for (unsigned int i=0; i<s2d->threads; i++) {
-		
+
 		 // iwork[i*LIW+5] = 100000;		// default
 		iwork[i*LIW+5] = s2d->max_steps;
 
-		for (unsigned r=0; r<s2d->reactions; r++) 
-			constants[i*s2d->reactions+r] = s2d->c_matrix[ i*s2d->reactions+r ];
+		for (unsigned r = 0; r < s2d->reactions; r++) {
+			constants[i * s2d->reactions + r] = s2d->c_matrix[i * s2d->reactions + r];
+		}
 
 		/* Number of ODEs */
 		neq[i] = s2d->species;
@@ -284,13 +258,13 @@ int main(int argc, char** argv)
 
 		/* Initial time */
 		t[i] = (double)0.;
-				
+
 		/* Error tolerances */
 		itol[i] = 2;
-		rtol[i] = s2d->rtol;						
+		rtol[i] = s2d->rtol;
 		for (unsigned int s=0; s<s2d->species; s++) {
-			atol[i*s2d->species+s] = s2d->atol[s];			
-		}		
+			atol[i * s2d->species + s] = s2d->atol[s];
+		}
 
 		/* Standard LSODA execution */
 		itask[i] = 1;
@@ -300,30 +274,7 @@ int main(int argc, char** argv)
 		liw[i] = LIW;
 		jt[i] = 2;
 	}
-	cuLsodaCommonBlockInit(Hcommon, s2d->threads);
-	
-	/* Allocate the global memory for LSODA data structures, replicated for each thread,
-	   and store the values loaded from local files. */
-	cudaMalloc((void**)&device_constants,sizeof(double)*s2d->threads*s2d->reactions);	cudaMemcpy(device_constants,constants,sizeof(double)*s2d->threads*s2d->reactions,cudaMemcpyHostToDevice);
-	cudaMalloc((void**)&_Dt,sizeof(double)*s2d->threads);								cudaMemcpy(_Dt,t,sizeof(double)*s2d->threads,cudaMemcpyHostToDevice);
-	cudaMalloc((void**)&_Dy,sizeof(double)*s2d->species*s2d->threads);					cudaMemcpy(_Dy,y,sizeof(double)*s2d->species*s2d->threads,cudaMemcpyHostToDevice);
-	cudaMalloc((void**)&_Djt,sizeof(int)*s2d->threads);									cudaMemcpy(_Djt,jt,sizeof(int)*s2d->threads,cudaMemcpyHostToDevice);
-	cudaMalloc((void**)&_Dneq,sizeof(int)*s2d->threads);								cudaMemcpy(_Dneq,neq,sizeof(int)*s2d->threads,cudaMemcpyHostToDevice);
-	cudaMalloc((void**)&_Dliw,sizeof(int)*s2d->threads);								cudaMemcpy(_Dliw,liw,sizeof(int)*s2d->threads,cudaMemcpyHostToDevice);
-	cudaMalloc((void**)&_Dlrw,sizeof(int)*s2d->threads);								cudaMemcpy(_Dlrw,lrw,sizeof(int)*s2d->threads,cudaMemcpyHostToDevice);
-	cudaMalloc((void**)&_Datol,sizeof(double)*s2d->species*s2d->threads);				cudaMemcpy(_Datol,atol,sizeof(double)*s2d->species*s2d->threads,cudaMemcpyHostToDevice);
-	cudaMalloc((void**)&_Ditol,sizeof(int)*s2d->threads);								cudaMemcpy(_Ditol,itol,sizeof(int)*s2d->threads,cudaMemcpyHostToDevice);
-	cudaMalloc((void**)&_Diopt,sizeof(int)*s2d->threads);								cudaMemcpy(_Diopt,iopt,sizeof(int)*s2d->threads,cudaMemcpyHostToDevice);
-	cudaMalloc((void**)&_Drtol,sizeof(double)*s2d->threads);							cudaMemcpy(_Drtol,rtol,sizeof(double)*s2d->threads,cudaMemcpyHostToDevice);
-	cudaMalloc((void**)&_Diout,sizeof(int)*s2d->threads);								cudaMemcpy(_Diout,iout,sizeof(int)*s2d->threads,cudaMemcpyHostToDevice);
-	cudaMalloc((void**)&_Dtout,sizeof(double)*s2d->threads);							cudaMemcpy(_Dtout,tout,sizeof(double)*s2d->threads,cudaMemcpyHostToDevice);
-	cudaMalloc((void**)&_Ditask,sizeof(int)*s2d->threads);								cudaMemcpy(_Ditask,itask,sizeof(int)*s2d->threads,cudaMemcpyHostToDevice);
-	cudaMalloc((void**)&_Diwork,sizeof(int)*LIW*s2d->threads);							cudaMemcpy(_Diwork,iwork,sizeof(int)*LIW*s2d->threads,cudaMemcpyHostToDevice);
-	cudaMalloc((void**)&_Drwork,sizeof(double)*LRW*s2d->threads);						cudaMemcpy(_Drwork,rwork,sizeof(double)*LRW*s2d->threads,cudaMemcpyHostToDevice);
-	cudaMalloc((void**)&_Distate,sizeof(int)*s2d->threads);								cudaMemcpy(_Distate,istate,sizeof(int)*s2d->threads,cudaMemcpyHostToDevice);
-	cudaMalloc((void**)&_Dcommon,sizeof(struct cuLsodaCommonBlock)*s2d->threads);		cudaMemcpy(_Dcommon,Hcommon,sizeof(struct cuLsodaCommonBlock)*s2d->threads, cudaMemcpyHostToDevice);
-	CudaCheckError()  ;
-	
+
 	unsigned int sh_memory_bytes;
 
 	/* Check for available shared memory: if the execution hierarchy (i.e., number of threads per block)
@@ -345,42 +296,41 @@ int main(int argc, char** argv)
 	// Code for profiling
 	cudaEvent_t start, stop;
 	if (!just_fitness) {
-		cudaEventCreate(&start);  
+		cudaEventCreate(&start);
 		cudaEventCreate(&stop);
 		cudaEventRecord(start, 0);
 	}
-	
+	dim3 BlocksPerGrid(s2d->blocks, 1, 1);
+	dim3 ThreadsPerBlock(s2d->tpb, 1, 1);
 	// LSODA documentation reads: "write a main program which calls subroutine lsoda once for each point at which answers are desired"
 	// For this reason, I use a for cycle that goes through the set of sampling temporal instants.
-	for (unsigned int ti=0; ti<s2d->time_instants.size(); ti++) 
-	{
+	for (unsigned int ti = 0; ti < s2d->time_instants.size(); ti++) {
 
-		/* Si può parallelizzare: TODO */		
-		for (unsigned int i=0; i<s2d->threads; i++) tout[i] = s2d->time_instants[ti];		
-		
-		cudaMemcpy(_Dtout,tout,sizeof(double)*s2d->threads,cudaMemcpyHostToDevice);
+		/* Si puï¿½ parallelizzare: TODO */
+		for (unsigned int i = 0; i < s2d->threads; i++) {
+			tout[i] = s2d->time_instants[ti];
+		}
 
-		// printf(" * Time step to %f.\n", tout[0]);
-					
-		dim3 BlocksPerGrid(s2d->blocks,1,1);
-		dim3 ThreadsPerBlock(s2d->tpb,1,1);
-		
-		// CUDA LSODA entry point 
-		cuLsoda<<<BlocksPerGrid,ThreadsPerBlock,sh_memory_bytes>>>
-			(fex, _Dneq, _Dy, _Dt, _Dtout, _Ditol, _Drtol, _Datol, _Ditask, _Distate, _Diopt, _Drwork, _Dlrw, _Diwork, _Dliw, 
-			 jex, _Djt, _Dcommon, d_debug, device_compressed_odes, device_flattenODE, device_offsetODE, device_constants, device_X, ti, 
-			 device_species_to_sample, device_flattenJAC, device_offsetJAC, ACTIVATE_SHARED_MEMORY, ACTIVATE_CONSTANT_MEMORY);
+		// CUDA LSODA entry point
+		cuLsoda<<<BlocksPerGrid,ThreadsPerBlock, sh_memory_bytes>> >
+												 (fex, neq, y, t, tout, itol, rtol, atol, itask, istate, iopt, rwork, lrw, iwork,
+														 liw, jex, jt, Hcommon, d_debug, device_compressed_odes, device_flattenODE, device_offsetODE,
+														 constants, host_X, ti, device_species_to_sample, device_flattenJAC, device_offsetJAC,
+														 ACTIVATE_SHARED_MEMORY, ACTIVATE_CONSTANT_MEMORY);
 		CudaCheckError();
-
+		cudaDeviceSynchronize();
 		/* Print debug information (if requested), for each thread */
 		if (DUMP_DEBUG==2) {
-			cudaMemcpy(istate,_Distate, sizeof(int)*s2d->threads,cudaMemcpyDeviceToHost);
 			printf(" * Dumping istates:\n");
-			for (unsigned int th=0; th<s2d->threads; th++) {				
+			for (unsigned int th = 0; th < s2d->threads; th++) {
 				printf("Thread %d: istate %d", th, istate[th]);
 				switch(istate[th]) {
-				case 1: printf(" (First step) "); break; 
-				case 2: printf(" (OK!) "); break; 
+					case 1:
+						printf(" (First step) ");
+						break;
+					case 2:
+						printf(" (OK!) ");
+						break;
 				case -1: printf (" (excess of word done) "); break;
 				case -2: printf (" (excess of accuracy requested) "); break;
 				case -3: printf (" (illegal input detected) "); break;
@@ -394,10 +344,9 @@ int main(int argc, char** argv)
 				printf("\n");
 			}
 
-			cudaMemcpy(iwork,_Diwork, sizeof(int)*LIW*s2d->threads,cudaMemcpyDeviceToHost);
-
 			for (unsigned int th=0; th<s2d->threads; th++) {
-				printf("[Thr%d] steps so far: %d, ODE evals: %d, Jac evals: %d.\n", th, iwork[th*LIW+10], iwork[th*LIW+11], iwork[th*LIW+12]);
+				printf("[Thr%d] steps so far: %d, ODE evals: %d, Jac evals: %d.\n", th, iwork[th * LIW + 10],
+					   iwork[th * LIW + 11], iwork[th * LIW + 12]);
 			}
 
 			printf("\n");
@@ -412,17 +361,16 @@ int main(int argc, char** argv)
 		cudaEventElapsedTime( &tempo, start, stop );
 		tempo /= 1000;
 		printf("Running time: %f seconds\n", tempo);
-		cudaEventDestroy(start); 
-		cudaEventDestroy(stop); 
+		cudaEventDestroy(start);
+		cudaEventDestroy(stop);
 	}
-	
+	unsigned int larg = s2d->threads;
 	unsigned int DEV_CONST_SAMPLESLUN = (unsigned int)s2d->species_to_sample.size();
 
 	cudaThreadSynchronize();
 
 	// Calculate the FT of the signals (i.e., time-series)
 	if (dump_fft) {
-
 		// calculate_fft(s2d, device_X, "prova_fft");
 		exit(0);
 
@@ -430,27 +378,25 @@ int main(int argc, char** argv)
 
 	/* If we are just calculating a fitness value, avoid creating and dumping to output files of simulations */
 	if (just_fitness) {
-
+		double *device_fitness, *host_fitness;
+		char *device_swarms;
 		host_fitness = (double*) malloc ( sizeof(double) * s2d->threads );
-
-		cudaMalloc((void**)&device_fitness,sizeof(double)*s2d->threads);	
-		cudaMalloc((void**)&device_swarms, sizeof(char)  *s2d->threads);	
+		cudaMalloc((void **) &device_fitness, sizeof(double) * s2d->threads);
+		cudaMalloc((void **) &device_swarms, sizeof(char) * s2d->threads);
 		CudaCheckError();
 
 		cudaMemcpy(device_swarms, s2d->thread2experiment, sizeof(char)*s2d->threads, cudaMemcpyHostToDevice);
 		CudaCheckError();
-		
-		dim3 BlocksPerGrid(s2d->blocks,1,1);
-		dim3 ThreadsPerBlock(s2d->tpb,1,1);
 
 		if (print_yukifitness)  {
-			// calculateFitnessYuki<<<BlocksPerGrid,ThreadsPerBlock>>>( device_X, device_fitness);
-			CudaCheckError();			
+			// calculateFitnessYuki<<<BlocksPerGrid,ThreadsPerBlock>>>( host_X, device_fitness);
+			CudaCheckError();
 		} else if (print_nomanfitness) {
-			calculateFitnessNoman<<<BlocksPerGrid,ThreadsPerBlock>>>( device_X, device_fitness, EA_ITERATION);
-			CudaCheckError();			
+			calculateFitnessNoman << < BlocksPerGrid, ThreadsPerBlock >> > (host_X, device_fitness, EA_ITERATION);
+			CudaCheckError();
 		} 	else {
-			calculateFitness<<<BlocksPerGrid,ThreadsPerBlock>>>( device_X, device_target, device_fitness, device_swarms );
+			calculateFitness << < BlocksPerGrid, ThreadsPerBlock >> >
+												 (host_X, device_target, device_fitness, device_swarms);
 			CudaCheckError();
 		}
 
@@ -463,7 +409,7 @@ int main(int argc, char** argv)
 
 		#ifdef _WIN32
 			std::string comando_crea_cartella("md ");
-			comando_crea_cartella.append(s2d->DEFAULT_OUTPUT);		
+			comando_crea_cartella.append(s2d->DEFAULT_OUTPUT);
 			system(comando_crea_cartella.c_str());
 		#else
 			std::string comando_crea_cartella("mkdir ");
@@ -474,7 +420,7 @@ int main(int argc, char** argv)
 
 			std::string outputfile(s2d->DEFAULT_OUTPUT);
 			outputfile.append("/pref_allfit");
-		
+
 			std::ofstream dump2(outputfile.c_str());
 
 			if (!dump2.is_open()) {
@@ -486,7 +432,7 @@ int main(int argc, char** argv)
 			// verify!!
 			for (unsigned int sw=0; sw<s2d->blocks; sw++) {
 				for (unsigned int part=0; part<s2d->tpb; part++) {
-					dump2 << host_fitness[sw*s2d->tpb + part] << "\t";					
+					dump2 << host_fitness[sw * s2d->tpb + part] << "\t";
 				}
 				dump2 << "\n";
 			}
@@ -497,7 +443,7 @@ int main(int argc, char** argv)
 			// verify!!
 			for (unsigned int sw=0; sw<s2d->blocks; sw++) {
 				for (unsigned int part=0; part<s2d->tpb; part++) {
-					std::cout << host_fitness[sw*s2d->tpb + part] << "\t";					
+					std::cout << host_fitness[sw * s2d->tpb + part] << "\t";
 				}
 				std::cout << "\n";
 			}
@@ -505,7 +451,7 @@ int main(int argc, char** argv)
 		}
 
 		free(host_fitness);
-		cudaFree(device_fitness);	
+		cudaFree(device_fitness);
 		cudaFree(device_swarms);
 		cudaFree(device_target);
 
@@ -515,20 +461,14 @@ int main(int argc, char** argv)
 	if (!just_fitness) {
 
 		// No fitness: let's save the output of simulations on the hard disk
-		cudaMemcpy(host_X,device_X, sizeof(conc_t) * s2d->species_to_sample.size() * s2d->threads * s2d->time_instants.size(), cudaMemcpyDeviceToHost);
+//		cudaMemcpy(host_X,device_X, sizeof(conc_t) * s2d->species_to_sample.size() * s2d->threads * s2d->time_instants.size(), cudaMemcpyDeviceToHost);
 
 		if (print_dynamics) {
-
 			for ( unsigned int tid=0; tid<s2d->actual_threads; tid++ ) {
-				
 				std::cout << std::setprecision(15);
-		
-				unsigned int larg = s2d->threads;
-				unsigned int DEV_CONST_SAMPLESLUN = (unsigned int) s2d->species_to_sample.size();		
-	
 				for (unsigned int campione=0; campione<s2d->time_instants.size(); campione++) {
 					std::cout << s2d->time_instants[campione] << "\t";
-					for (unsigned int s=0; s<s2d->species_to_sample.size(); s++) {				
+					for (unsigned int s = 0; s < s2d->species_to_sample.size(); s++) {
 						std::cout << host_X[ ACCESS_SAMPLE ];
 						if ( s!=s2d->species_to_sample.size()-1 )
 							std::cout << "\t";
@@ -544,7 +484,7 @@ int main(int argc, char** argv)
 			// """crossplatform""" folder creation (TODO)
 			#ifdef _WIN32
 				std::string comando_crea_cartella("md ");
-				comando_crea_cartella.append(s2d->DEFAULT_OUTPUT);		
+			comando_crea_cartella.append(s2d->DEFAULT_OUTPUT);
 				system(comando_crea_cartella.c_str());
 			#else
 				std::string comando_crea_cartella("mkdir ");
@@ -553,7 +493,7 @@ int main(int argc, char** argv)
 			#endif
 
 			for ( unsigned int tid=0; tid<s2d->actual_threads; tid++ ) {
-				
+
 				std::string outputfile(s2d->DEFAULT_OUTPUT);
 				outputfile.append("/");
 				outputfile.append(s2d->DEFAULT_PREFIX);
@@ -566,15 +506,12 @@ int main(int argc, char** argv)
 					perror("ERROR: cannot save dynamics");
 					exit(-2);
 				}
-	 
+
 				dump2 << std::setprecision(15);
-		
-				unsigned int larg = s2d->threads;
-				unsigned int DEV_CONST_SAMPLESLUN = (unsigned int) s2d->species_to_sample.size();		
-	
+
 				for (unsigned int campione=0; campione<s2d->time_instants.size(); campione++) {
 					dump2 << s2d->time_instants[campione] << "\t";
-					for (unsigned int s=0; s<s2d->species_to_sample.size(); s++) {				
+					for (unsigned int s = 0; s < s2d->species_to_sample.size(); s++) {
 						dump2 << host_X[ ACCESS_SAMPLE ];
 						if ( s!=s2d->species_to_sample.size()-1 )
 							dump2 << "\t";
@@ -589,20 +526,33 @@ int main(int argc, char** argv)
 
 	} // end not just fitness
 
-	// release memory on the CPU
-	free(host_X);
-		
-	// release memory on the GPU
-	cudaFree(device_X);
+	// release memory on the GPU/CPU
+	cudaFree(host_X);
 	cudaFree(device_compressed_odes);
-	cudaFree(device_constants);
+	cudaFree(constants);
 	cudaFree(device_flattenJAC);
 	cudaFree(device_flattenODE);
 	cudaFree(device_offsetJAC);
 	cudaFree(device_offsetODE);
-	cudaFree(device_species_to_sample);	
-
-	    return 0;
-} 
+	cudaFree(device_species_to_sample);
+	cudaFree(rwork);
+	cudaFree(tout);
+	cudaFree(rtol);
+	cudaFree(atol);
+	cudaFree(constants);
+	cudaFree(istate);
+	cudaFree(iwork);
+	cudaFree(itask);
+	cudaFree(iout);
+	cudaFree(iopt);
+	cudaFree(itol);
+	cudaFree(lrw);
+	cudaFree(liw);
+	cudaFree(neq);
+	cudaFree(jt);
+	cudaFree(t);
+	cudaFree(y);
+	return 0;
+}
 
 
