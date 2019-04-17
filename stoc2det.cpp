@@ -293,9 +293,9 @@ bool st2det::open_files( std::string folder, std::string output, std::string pre
 		printf(" * Detected %d reactions\n", reactions);
 
 	/// step 2: left matrix	
-	char* left_matrix = (char*)  malloc ( sizeof(char)*this->species*reactions );
-	char* right_matrix = (char*) malloc ( sizeof(char)*this->species*reactions );
-	char* var_matrix = (char*)   malloc ( sizeof(char)*this->species*reactions );
+	int* left_matrix = (int*)  malloc ( sizeof(int)*this->species*reactions );
+	int* right_matrix = (int*) malloc ( sizeof(int)*this->species*reactions );
+	int* var_matrix = (int*)   malloc ( sizeof(int)*this->species*reactions );
 
 	leftfile.open( (this->DEFAULT_FOLDER+"/left_side").c_str() );
 	// while ( leftfile.good() ) {
